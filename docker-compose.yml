@@ -1,0 +1,30 @@
+version: '3'
+
+services:
+  kafka:
+    image: "spotify/kafka"
+    networks:
+      - alpakka-net
+    environment:
+      - ADVERTISED_HOST=kafka
+      - ADVERTISED_PORT=9092
+
+  producer:
+    image: "mwe-producer"
+    networks:
+      - alpakka-net
+    depends_on:
+      - kafka
+    environment:
+      - PRODUCER_RECORD_COUNT=100
+
+  consumer:
+    image: "at-most-once-consumer"
+    networks:
+      - alpakka-net
+    depends_on:
+      - kafka
+
+networks:
+  alpakka-net:
+    driver: bridge

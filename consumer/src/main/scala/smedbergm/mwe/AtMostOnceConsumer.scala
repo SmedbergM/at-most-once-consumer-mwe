@@ -1,18 +1,19 @@
-import scala.concurrent.duration._
+package smedbergm.mwe
+
 import scala.concurrent.{Future, Promise}
+import scala.concurrent.duration._
 import scala.util.{Random, Try}
 
 import akka.NotUsed
 import akka.actor.{Actor, ActorSystem, Props}
-import akka.kafka.scaladsl.{Committer, Consumer}
 import akka.kafka.scaladsl.Consumer.DrainingControl
-import akka.kafka.{AutoSubscription, CommitDelivery, CommitterSettings, ConsumerMessage, ConsumerSettings, Subscription, Subscriptions}
+import akka.kafka.scaladsl.{Committer, Consumer}
+import akka.kafka._
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.kafka.common.serialization.{Deserializer, IntegerDeserializer, StringDeserializer}
-import smedbergm.mwe.Common
 
 object AtMostOnceConsumer extends App with LazyLogging {
   val applicationConfig: Config = ConfigFactory.load()
@@ -44,23 +45,13 @@ object AtMostOnceConsumer extends App with LazyLogging {
     (taskLengthConfig.getInt("min"), taskLengthConfig.getInt("delta"))
   }
 
-  val kafkaConsumer = Consumer.atMostOnceSource(kafkaConsumerSettings, subscription)
-    .mapAsyncUnordered(4){ record =>
-      logger.info(s"Read record ${record.key()} -> ${record.value()}")
-      val message = new MessageFromConsumer(record.key(), record.value())
-      val delay: FiniteDuration = (taskLengthMin + Random.nextInt(taskLengthDelta)).seconds
-      actorSystem.scheduler.scheduleOnce(delay, consumerActor, message)
-      message.consumed
-    }.toMat(Sink.foreach { v =>
-      logger.info(s"Sinking value ${v}")
-    })(Keep.both)
-    .mapMaterializedValue(DrainingControl.apply)
-//    .run()
-  val committerSettings: CommitterSettings = CommitterSettings(actorSystem)
-    .withMaxBatch(1)
-    .withMaxInterval(150 milliseconds)
-    .withParallelism(4)
-    .withDelivery(CommitDelivery.waitForAck)
+  val committerSettings: CommitterSettings = {
+    CommitterSettings(actorSystem)
+      .withMaxBatch(1)
+      .withMaxInterval(150 milliseconds)
+      .withParallelism(4)
+      .withDelivery(CommitDelivery.waitForAck)
+  }
   val committerFlow: Flow[ConsumerMessage.CommittableMessage[Int, String], (Int, String), NotUsed] = {
     Flow[ConsumerMessage.CommittableMessage[Int, String]].flatMapConcat { msg =>
       logger.info(s"Pre-commit: ${msg.record.key()} -> ${msg.record.value()}")
@@ -69,21 +60,21 @@ object AtMostOnceConsumer extends App with LazyLogging {
         .map(_ => msg.record.key() -> msg.record.value())
     }
   }
-  val kafkaConsumer2 = Consumer.committableSource(kafkaConsumerSettings, subscription)
-    .via(committerFlow)
-    .mapAsyncUnordered(4) { case (key, value) =>
-      logger.info(s"Processing committed record ${key} -> ${value}")
-      val mfc = new MessageFromConsumer(key, value)
-      val delay: FiniteDuration = (taskLengthMin + Random.nextInt(taskLengthDelta)).seconds
-      actorSystem.scheduler.scheduleOnce(delay, consumerActor, mfc)
-      mfc.consumed
-    }.toMat(Sink.foreach { v =>
-      logger.info(s"Sinking value: ${v}")
-    })(Keep.both)
+
+  Consumer.committablePartitionedSource(kafkaConsumerSettings, subscription).flatMapMerge(breadth = 5, { case (_, src) =>
+    src.via(committerFlow)
+  }).mapAsyncUnordered(4) { case (key, value) =>
+    logger.info(s"Processing committed record ${key} -> ${value}")
+    val mfc = new MessageFromConsumer(key, value)
+    val delay: FiniteDuration = (taskLengthMin + Random.nextInt(taskLengthDelta)).seconds
+    actorSystem.scheduler.scheduleOnce(delay, consumerActor, mfc)
+    mfc.consumed
+  }.toMat(Sink.foreach { v =>
+    logger.info(s"Sinking value: ${v}")
+  })(Keep.both)
     .mapMaterializedValue(DrainingControl.apply)
     .run()
 }
-
 
 class MessageFromConsumer(val key: Int, val message: String) {
   private val p: Promise[String] = Promise()

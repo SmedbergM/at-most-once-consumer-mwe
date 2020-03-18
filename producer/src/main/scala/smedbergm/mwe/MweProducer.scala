@@ -1,3 +1,5 @@
+package smedbergm.mwe
+
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
@@ -5,13 +7,12 @@ import akka.Done
 import akka.actor.ActorSystem
 import akka.kafka.ProducerSettings
 import akka.kafka.scaladsl.Producer
-import akka.stream.{ActorMaterializer, Materializer}
 import akka.stream.scaladsl.Source
+import akka.stream.{ActorMaterializer, Materializer}
 import com.typesafe.config.{Config, ConfigFactory}
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.{IntegerSerializer, Serializer, StringSerializer}
-import smedbergm.mwe.Common
 
 object MweProducer extends App with LazyLogging {
   val applicationConfig: Config = ConfigFactory.load()

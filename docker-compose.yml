@@ -16,7 +16,7 @@ services:
     depends_on:
       - kafka
     environment:
-      - PRODUCER_RECORD_COUNT=100
+      PRODUCER_RECORD_COUNT: 100
 
   consumer:
     image: "at-most-once-consumer"
@@ -24,6 +24,9 @@ services:
       - alpakka-net
     depends_on:
       - kafka
+    environment:
+      COMMIT_MAX_BATCH: 50
+      COMMIT_MAX_INTERVAL: 500ms
 
 networks:
   alpakka-net:

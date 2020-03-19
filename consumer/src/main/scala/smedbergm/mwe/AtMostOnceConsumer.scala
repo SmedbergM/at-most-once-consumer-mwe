@@ -40,16 +40,17 @@ object AtMostOnceConsumer extends App with LazyLogging {
   val props = Props(new ConsumerActor)
   val consumerActor = actorSystem.actorOf(props)
 
-  val (taskLengthMin: Int, taskLengthDelta: Int) = {
-    val taskLengthConfig = applicationConfig.getConfig("mwe-consumer.task-length-seconds")
-    (taskLengthConfig.getInt("min"), taskLengthConfig.getInt("delta"))
+  val (taskLengthMin: FiniteDuration, taskLengthMax: FiniteDuration) = {
+    val taskLengthConfig = applicationConfig.getConfig("mwe-consumer.task-length")
+    taskLengthConfig.getDuration("min").asScala -> taskLengthConfig.getDuration("max").asScala
   }
 
   val committerSettings: CommitterSettings = {
+    val committerConfig = applicationConfig.getConfig("mwe-consumer.committer")
     CommitterSettings(actorSystem)
-      .withMaxBatch(1)
-      .withMaxInterval(150 milliseconds)
-      .withParallelism(4)
+      .withMaxBatch(committerConfig.getInt("max-batch"))
+      .withMaxInterval(committerConfig.getDuration("max-interval").asScala)
+      .withParallelism(committerConfig.getInt("parallelism"))
       .withDelivery(CommitDelivery.waitForAck)
   }
   val committerFlow: Flow[ConsumerMessage.CommittableMessage[Int, String], (Int, String), NotUsed] = {
@@ -64,16 +65,21 @@ object AtMostOnceConsumer extends App with LazyLogging {
   Consumer.committablePartitionedSource(kafkaConsumerSettings, subscription).flatMapMerge(breadth = 5, { case (_, src) =>
     src.via(committerFlow)
   }).mapAsyncUnordered(4) { case (key, value) =>
-    logger.info(s"Processing committed record ${key} -> ${value}")
+    val taskLength = randomDuration(taskLengthMin, taskLengthMax)
+    logger.info(s"Processing committed record ${key} -> ${value}; this will take ${taskLength.toMillis}ms")
     val mfc = new MessageFromConsumer(key, value)
-    val delay: FiniteDuration = (taskLengthMin + Random.nextInt(taskLengthDelta)).seconds
-    actorSystem.scheduler.scheduleOnce(delay, consumerActor, mfc)
+    actorSystem.scheduler.scheduleOnce(taskLength, consumerActor, mfc)
     mfc.consumed
   }.toMat(Sink.foreach { v =>
     logger.info(s"Sinking value: ${v}")
   })(Keep.both)
     .mapMaterializedValue(DrainingControl.apply)
     .run()
+
+  def randomDuration(min: FiniteDuration, max: FiniteDuration): FiniteDuration = {
+    val range = (max - min).toMillis
+    min + (Random.nextLong() % range).milliseconds
+  }
 }
 
 class MessageFromConsumer(val key: Int, val message: String) {
